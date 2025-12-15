@@ -2,14 +2,23 @@
 set -euo pipefail
 shopt -s extglob
 
+
+## Set some global configuration options, but allow users to override them
+
 ## If we're running in debug mode, be REALLY VERBOSE:
 if [[ "${BUILDKITE_PLUGIN_JULIA_DEBUG_PLUGIN:-false}" == "true" ]]; then
+    PS4="> "
     set -x
 fi
 
 CACHE_DIR=${BUILDKITE_PLUGIN_JULIA_CACHE_DIR:-${HOME}/.cache/julia-buildkite-plugin}
 
 echo "--- :broom: Performing clean-up"
+
+if [[ "${BUILDKITE_PLUGIN_JULIA_SUCCESS:-false}" != "true" ]]; then
+    echo "Skipping clean-up since the plugin did not successfully run."
+    exit 0
+fi
 
 
 ### Step 1: Remove any code coverage files.
@@ -23,12 +32,14 @@ fi
 
 # Some packages check coverage files in, so only remove writable ones
 if [[ "${BUILDKITE_PLUGIN_JULIA_ISOLATED_DEPOT:-true}" == "true" && \
-      -d "${JULIA_DEPOT_PATH}"/packages ]]; then
-    find "${JULIA_DEPOT_PATH}"/packages -name "*.jl.*.cov" -type f -perm -200 -delete
+      -d "${DEPOT_DIR}"/packages ]]; then
+    find "${DEPOT_DIR}"/packages -name "*.jl.*.cov" -type f -perm -200 -delete
 fi
 
 
 ### Step 2: Reduce the size of our depot by removing old precompilation files.
+
+echo "Removing old precompilation files"
 
 # Julia does not track when a precompilation file was last used, so we simply
 # remove files in the `compiled` directory until we are below the limit.
@@ -37,7 +48,7 @@ fi
 COMPILED_LIMIT="${BUILDKITE_PLUGIN_JULIA_COMPILED_SIZE_LIMIT:-1073741824}"
 
 if [[ "${BUILDKITE_PLUGIN_JULIA_ISOLATED_DEPOT:-true}" == "true" ]]; then
-    COMPILED_DIR="${JULIA_DEPOT_PATH}/compiled"
+    COMPILED_DIR="${DEPOT_DIR}/compiled"
     if [[ -d "${COMPILED_DIR}" ]]; then
         COMPILED_SIZE_HUMAN=$(du -h -s "${COMPILED_DIR}" | cut -f 1)
         # `-k` gives consistently the number of kilobytes on macOS and Linux,
@@ -87,6 +98,8 @@ fi
 
 ### Step 3: Reduce the size of our depot by removing old artifacts.
 
+echo "Removing old artifacts"
+
 # This is normally done by `Pkg.gc`, however, since manifests are ephemeral
 # (and logs directories may not even persist) that doesn't work well.
 # So instead we remove directories based on their creation time.
@@ -95,7 +108,7 @@ fi
 ARTIFACTS_LIMIT="${BUILDKITE_PLUGIN_JULIA_ARTIFACTS_SIZE_LIMIT:-10737418240}"
 
 if [[ "${BUILDKITE_PLUGIN_JULIA_ISOLATED_DEPOT:-true}" == "true" ]]; then
-    ARTIFACTS_DIR="${JULIA_DEPOT_PATH}/artifacts"
+    ARTIFACTS_DIR="${DEPOT_DIR}/artifacts"
     if [[ -d "${ARTIFACTS_DIR}" ]]; then
         ARTIFACTS_SIZE_HUMAN=$(du -h -s "${ARTIFACTS_DIR}" | cut -f 1)
         # `-k` gives consistently the number of kilobytes on macOS and Linux,
@@ -151,21 +164,26 @@ DEPOT_LIMIT_DEFAULT=$(($COMPILED_LIMIT+$ARTIFACTS_LIMIT+10737418240))
 DEPOT_LIMIT="${BUILDKITE_PLUGIN_JULIA_DEPOT_SIZE_LIMIT:-${DEPOT_LIMIT_DEFAULT}}"
 
 if [[ "${BUILDKITE_PLUGIN_JULIA_ISOLATED_DEPOT:-true}" == "true" ]]; then
-    DEPOT_SIZE_HUMAN=$(du -h -s "${JULIA_DEPOT_PATH}" | cut -f 1)
-    # `-k` gives consistently the number of kilobytes on both macOS and Linux,
-    # without it BSD `du` would give the number of multiples of 512 bytes.
-    DEPOT_SIZE=$(($(du -k -s "${JULIA_DEPOT_PATH}" | cut -f 1) * 1024))
-    echo "The depot size is: ${DEPOT_SIZE_HUMAN}"
+    echo "Checking overall depot size at ${DEPOT_DIR}"
+    if [[ -d "${DEPOT_DIR}" ]]; then
+        DEPOT_SIZE_HUMAN=$(du -h -s "${DEPOT_DIR}" | cut -f 1)
+        # `-k` gives consistently the number of kilobytes on both macOS and Linux,
+        # without it BSD `du` would give the number of multiples of 512 bytes.
+        DEPOT_SIZE=$(($(du -k -s "${DEPOT_DIR}" | cut -f 1) * 1024))
+        echo "The depot size is: ${DEPOT_SIZE_HUMAN}"
 
-    if [[ ${DEPOT_SIZE} -gt ${DEPOT_LIMIT} ]]; then
-        echo "This is greater than the limit (${DEPOT_SIZE} > ${DEPOT_LIMIT} bytes), so we will clear the entire depot"
-        rm -rf "${JULIA_DEPOT_PATH}"
-        mkdir -p "${JULIA_DEPOT_PATH}"
+        if [[ ${DEPOT_SIZE} -gt ${DEPOT_LIMIT} ]]; then
+            echo "This is greater than the limit (${DEPOT_SIZE} > ${DEPOT_LIMIT} bytes), so we will clear the entire depot"
+            rm -rf "${DEPOT_DIR}"
+            mkdir -p "${DEPOT_DIR}"
+        fi
     fi
 fi
 
 
 ### Step 5: Remove old depots.
+
+echo "Removing old depots"
 
 # We mark a depot as in-use by `touch`ing it at the start of the pipeline,
 # so we can remove any depots that are older than a certain age.
