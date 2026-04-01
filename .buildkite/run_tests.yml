@@ -2,7 +2,7 @@ self_test_setup: &self_test_setup
   post-checkout: |
     mkdir -p .buildkite/plugins/julia
     cp -Ra hooks plugin.yml README.md .buildkite/plugins/julia/
-  
+
 steps:
   - label: ":julia: ${AGENT_OS?} ${ARCH?} ${JULIA_VERSION?}"
     agents:
@@ -20,6 +20,8 @@ steps:
       CHECK_VERSION="${JULIA_VERSION?}"
       if [[ "${JULIA_VERSION?}" == "nightly" ]]; then
         CHECK_VERSION="1."
+      elif [[ "${JULIA_VERSION?}" =~ ^(alpha|beta|rc)$ ]]; then
+        CHECK_VERSION="$$(python3 .buildkite/plugins/julia/hooks/named-versions-only.py "${JULIA_VERSION?}")"
       fi
       [[ "$$(julia --version)" == "julia version $${CHECK_VERSION}"* ]]
 
